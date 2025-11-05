@@ -8,9 +8,109 @@ the Bitwarden vault, searching items, and copying passwords.
 import curses
 import pyperclip
 import logging
+import subprocess
+import sys
+import os
 from typing import List, Dict, Any, Optional
 
 from bw_tui.bitwarden import BitwardenCLI
+
+
+class ClipboardManager:
+    """Cross-platform clipboard manager with multiple fallback methods."""
+    
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
+    
+    def copy_to_clipboard(self, text: str) -> bool:
+        """Copy text to clipboard using the best available method.
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        methods = [
+            self._try_pyperclip,
+            self._try_xclip,
+            self._try_xsel,
+            self._try_wl_copy,
+            self._try_termux_clipboard,
+        ]
+        
+        for method in methods:
+            try:
+                if method(text):
+                    self.logger.debug("Successfully copied to clipboard using %s", method.__name__)
+                    return True
+            except (OSError, subprocess.SubprocessError, ValueError) as e:
+                self.logger.debug("Clipboard method %s failed: %s", method.__name__, e)
+                continue
+        
+        self.logger.warning("All clipboard methods failed")
+        return False
+    
+    def _try_pyperclip(self, text: str) -> bool:
+        """Try using pyperclip."""
+        try:
+            pyperclip.copy(text)
+            return True
+        except (OSError, pyperclip.PyperclipException):
+            return False
+    
+    def _try_xclip(self, text: str) -> bool:
+        """Try using xclip (X11 clipboard)."""
+        try:
+            process = subprocess.run(
+                ['xclip', '-selection', 'clipboard'],
+                input=text,
+                text=True,
+                check=True,
+                capture_output=True
+            )
+            return process.returncode == 0
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return False
+    
+    def _try_xsel(self, text: str) -> bool:
+        """Try using xsel (X11 clipboard)."""
+        try:
+            process = subprocess.run(
+                ['xsel', '--clipboard', '--input'],
+                input=text,
+                text=True,
+                check=True,
+                capture_output=True
+            )
+            return process.returncode == 0
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return False
+    
+    def _try_wl_copy(self, text: str) -> bool:
+        """Try using wl-copy (Wayland clipboard)."""
+        try:
+            process = subprocess.run(
+                ['wl-copy'],
+                input=text,
+                text=True,
+                check=True,
+                capture_output=True
+            )
+            return process.returncode == 0
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return False
+    
+    def _try_termux_clipboard(self, text: str) -> bool:
+        """Try using termux-clipboard (for Termux/Android)."""
+        try:
+            process = subprocess.run(
+                ['termux-clipboard-set'],
+                input=text,
+                text=True,
+                check=True,
+                capture_output=True
+            )
+            return process.returncode == 0
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return False
 
 
 class MainWindow:
@@ -26,14 +126,15 @@ class MainWindow:
         self.stdscr = stdscr
         self.bw_cli = bw_cli
         self.logger = logging.getLogger(__name__)
+        self.clipboard = ClipboardManager()
         
         # UI state
         self.items: List[Dict[str, Any]] = []
         self.filtered_items: List[Dict[str, Any]] = []
         self.current_selection = 0
         self.search_query = ""
-        self.session_key: Optional[str] = None
         self.mode = "browse"  # browse, search, unlock
+        self.session_key: Optional[str] = None
         
         # Window dimensions
         self.height, self.width = stdscr.getmaxyx()
@@ -47,9 +148,11 @@ class MainWindow:
     def _init_curses(self):
         """Initialize curses settings."""
         curses.curs_set(0)  # Hide cursor
-        # Remove non-blocking input - we want blocking input
-        # self.stdscr.nodelay(1)  # Non-blocking input
-        # self.stdscr.timeout(100)  # 100ms timeout
+        curses.cbreak()     # Disable line buffering
+        curses.noecho()     # Don't echo input
+        self.stdscr.keypad(True)  # Enable special keys
+        self.stdscr.nodelay(True)  # Non-blocking input
+        self.stdscr.timeout(50)    # 50ms timeout for better responsiveness
         
         # Initialize colors
         curses.start_color()
@@ -107,34 +210,65 @@ class MainWindow:
         self.mode = "unlock"
         password = ""
         
-        while True:
+        # Disable non-blocking input for password entry
+        self.stdscr.nodelay(False)
+        self.stdscr.timeout(-1)  # Blocking input
+        
+        try:
+            # Draw initial screen
             self._draw_unlock_screen(password)
             
-            ch = self.stdscr.getch()
-            
-            if ch == curses.KEY_ENTER or ch == 10:
-                # Try to unlock
-                self.logger.debug("Attempting to unlock vault with provided password")
-                self.session_key = self.bw_cli.unlock(password)
-                if self.session_key:
-                    self.logger.debug(f"Unlock successful, session key received (length: {len(self.session_key)})")
-                    self.mode = "browse"
-                    return True
-                else:
-                    # Show error and try again
-                    self.logger.debug("Unlock failed, invalid password")
-                    password = ""
-                    self._show_status("Invalid password. Try again.", error=True)
+            while True:
+                try:
+                    ch = self.stdscr.getch()
+                    self.logger.debug("Received key code: %d", ch)
                     
-            elif ch == 27:  # ESC
-                self.logger.debug("User cancelled unlock process")
-                return False
-                
-            elif ch == curses.KEY_BACKSPACE or ch == 127:
-                password = password[:-1]
-                
-            elif ch >= 32 and ch <= 126:  # Printable characters
-                password += chr(ch)
+                    old_password = password
+                    
+                    if ch == curses.KEY_ENTER or ch == 10 or ch == 13:
+                        # Try to unlock
+                        self.logger.debug("Attempting to unlock vault with provided password")
+                        session_key = self.bw_cli.unlock(password)
+                        if session_key:
+                            self.logger.debug("Unlock successful")
+                            self.mode = "browse"
+                            # Store session key for future operations
+                            self.session_key = session_key
+                            return True
+                        else:
+                            # Show error and try again
+                            self.logger.debug("Unlock failed, invalid password")
+                            password = ""
+                            self._show_status("Invalid password. Try again.", error=True)
+                            
+                    elif ch == 27:  # ESC
+                        self.logger.debug("User cancelled unlock process")
+                        return False
+                        
+                    elif ch == curses.KEY_BACKSPACE or ch == 127 or ch == 8:
+                        if password:
+                            password = password[:-1]
+                            self.logger.debug("Backspace pressed, password length now: %d", len(password))
+                        
+                    elif ch >= 32 and ch <= 126:  # Printable characters
+                        password += chr(ch)
+                        self.logger.debug("Added character, password length now: %d", len(password))
+                        
+                    # Handle other special keys (ignore them)
+                    elif ch != -1:
+                        self.logger.debug("Ignoring special key: %d", ch)
+                    
+                    # Only redraw if password changed
+                    if password != old_password:
+                        self._draw_unlock_screen(password)
+                        
+                except (KeyboardInterrupt, EOFError) as e:
+                    self.logger.error("Input handling interrupted: %s", e)
+                    return False
+        finally:
+            # Re-enable non-blocking input for main interface
+            self.stdscr.nodelay(True)
+            self.stdscr.timeout(50)
     
     def _draw_unlock_screen(self, password: str):
         """Draw the unlock screen.
@@ -144,21 +278,79 @@ class MainWindow:
         """
         self.stdscr.clear()
         
-        title = "bw-tui - Unlock Vault"
+        # Title
+        title = "🔐 bw-tui - Unlock Vault"
         self.stdscr.addstr(2, (self.width - len(title)) // 2, title, curses.A_BOLD)
         
-        prompt = "Master Password: "
+        # Calculate box dimensions
+        box_width = 50
+        box_height = 8
+        box_x = (self.width - box_width) // 2
+        box_y = (self.height - box_height) // 2
+        
+        # Draw box border (with fallback for terminals that don't support ACS)
+        try:
+            ul_char = curses.ACS_ULCORNER
+            ur_char = curses.ACS_URCORNER
+            ll_char = curses.ACS_LLCORNER
+            lr_char = curses.ACS_LRCORNER
+            h_char = curses.ACS_HLINE
+            v_char = curses.ACS_VLINE
+        except (AttributeError, ValueError):
+            # Fallback to ASCII characters for terminals that don't support ACS
+            ul_char = '+'
+            ur_char = '+'
+            ll_char = '+'
+            lr_char = '+'
+            h_char = '-'
+            v_char = '|'
+        
+        for i in range(box_height):
+            for j in range(box_width):
+                x = box_x + j
+                y = box_y + i
+                
+                if i == 0 and j == 0:
+                    self.stdscr.addch(y, x, ul_char)
+                elif i == 0 and j == box_width - 1:
+                    self.stdscr.addch(y, x, ur_char)
+                elif i == box_height - 1 and j == 0:
+                    self.stdscr.addch(y, x, ll_char)
+                elif i == box_height - 1 and j == box_width - 1:
+                    self.stdscr.addch(y, x, lr_char)
+                elif i == 0 or i == box_height - 1:
+                    self.stdscr.addch(y, x, h_char)
+                elif j == 0 or j == box_width - 1:
+                    self.stdscr.addch(y, x, v_char)
+        
+        # Box title
+        box_title = " Enter Master Password "
+        title_x = box_x + (box_width - len(box_title)) // 2
+        self.stdscr.addstr(box_y + 1, title_x, box_title, curses.A_BOLD)
+        
+        # Password prompt and input
+        prompt = "Password:"
+        prompt_x = box_x + 4
+        prompt_y = box_y + 3
+        self.stdscr.addstr(prompt_y, prompt_x, prompt, curses.A_BOLD)
+        
+        # Password input field (with background)
+        input_width = 30
+        input_x = box_x + 4 + len(prompt) + 1
+        input_bg = " " * input_width
+        self.stdscr.addstr(prompt_y, input_x, input_bg, curses.A_REVERSE)
+        
+        # Password mask
         mask = "*" * len(password)
+        if len(mask) > input_width - 2:
+            mask = mask[:input_width - 2]
+        mask_x = input_x + 1
+        self.stdscr.addstr(prompt_y, mask_x, mask, curses.A_REVERSE | curses.A_BOLD)
         
-        self.stdscr.addstr(self.height // 2, 5, prompt)
-        self.stdscr.addstr(self.height // 2, 5 + len(prompt), mask)
-        
-        instructions = "Press ENTER to unlock, ESC to exit"
-        self.stdscr.addstr(
-            self.height - 3, 
-            (self.width - len(instructions)) // 2, 
-            instructions
-        )
+        # Instructions
+        instructions = "ENTER to unlock • ESC to exit"
+        instr_x = box_x + (box_width - len(instructions)) // 2
+        self.stdscr.addstr(box_y + 5, instr_x, instructions, curses.A_DIM)
         
         self.stdscr.refresh()
     
@@ -166,16 +358,17 @@ class MainWindow:
         """Load items from the vault."""
         self.logger.debug("Loading items from vault...")
         self.items = self.bw_cli.get_items(self.session_key)
-        self.logger.debug(f"Loaded {len(self.items)} items from vault")
+        self.logger.debug("Loaded %d items from vault", len(self.items))
         self.filtered_items = self.items.copy()
         self.current_selection = 0
-        self.logger.debug(f"Filtered items count: {len(self.filtered_items)}")
+        self.logger.debug("Filtered items count: %d", len(self.filtered_items))
         
         # Log some sample item names for debugging
         for i, item in enumerate(self.items[:3]):
             name = item.get("name", "Unknown")
-            self.logger.debug(f"Item {i+1}: {name}")
-    
+            self.logger.debug("Item %d: %s", i+1, name)
+
+
     def _draw_ui(self):
         """Draw the main UI."""
         self._draw_header()
@@ -277,8 +470,9 @@ class MainWindow:
         """Handle keyboard input."""
         ch = self.stdscr.getch()
         
-        # Since we removed nodelay, getch() will block until input
-        # So we don't need to check for -1 anymore
+        # With nodelay enabled, getch() returns -1 if no input available
+        if ch == -1:
+            return  # No input available, nothing to do
         
         redraw_needed = True  # Track if we need to redraw
         
@@ -345,10 +539,10 @@ class MainWindow:
         
         if item.get("login") and item["login"].get("password"):
             password = item["login"]["password"]
-            try:
-                pyperclip.copy(password)
-                self._show_status(f"Password copied for: {item.get('name', 'Unknown')}")
-            except Exception:
+            if self.clipboard.copy_to_clipboard(password):
+                self._show_status("Password copied for: %s" % item.get('name', 'Unknown'))
+            else:
+                self.logger.error("Failed to copy to clipboard using any method")
                 self._show_status("Failed to copy password to clipboard", error=True)
         else:
             self._show_status("No password found for this item", error=True)

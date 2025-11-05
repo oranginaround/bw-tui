@@ -19,6 +19,27 @@ A minimal console password manager that wraps the Bitwarden CLI in a curses-base
 
 2. **Python 3.8+**: The application requires Python 3.8 or later.
 
+3. **Clipboard Tools** (optional, for password copying):
+   
+   **On Debian/Ubuntu:**
+   ```bash
+   sudo apt install xclip
+   # or
+   sudo apt install xsel
+   ```
+   
+   **On Wayland systems:**
+   ```bash
+   sudo apt install wl-clipboard
+   ```
+   
+   **On macOS:**
+   ```bash
+   # No additional installation needed
+   ```
+   
+   If no clipboard tools are available, passwords will be displayed on screen instead.
+
 ## Installation
 
 1. Clone this repository:

@@ -20,7 +20,7 @@ class BwTuiApp:
     
     def __init__(self):
         """Initialize the application."""
-        self.bw_cli = BitwardenCLI()
+        self.bw_cli = None
         self.main_window: Optional[MainWindow] = None
         
         # Set up logging - only log to file if BW_DEBUG=1 is set
@@ -37,24 +37,27 @@ class BwTuiApp:
     def run(self):
         """Run the main application loop."""
         try:
+            # Initialize the Bitwarden CLI wrapper
+            self.bw_cli = BitwardenCLI()
+            
             # Check if Bitwarden CLI is available
             if not self.bw_cli.check_cli_available():
-                print("Error: Bitwarden CLI (bw) is not available.")
-                print("Please install the Bitwarden CLI first:")
-                print("  npm install -g @bitwarden/cli")
+                print("Error: Bitwarden CLI is not available.")
+                print("Please install it with: npm install -g @bitwarden/cli")
                 sys.exit(1)
             
             # Check if user is logged in
             if not self.bw_cli.is_logged_in():
-                print("Please log in to Bitwarden first:")
-                print("  bw login")
+                print("Error: You are not logged in to Bitwarden.")
+                print("Please run 'bw login' first.")
                 sys.exit(1)
             
             # Initialize curses and run the UI
             curses.wrapper(self._run_ui)
             
         except Exception as e:
-            self.logger.error(f"Application error: {e}")
+            logger = logging.getLogger(__name__)
+            logger.error("Application error: %s", e)
             raise
     
     def _run_ui(self, stdscr):
@@ -67,5 +70,6 @@ class BwTuiApp:
             self.main_window = MainWindow(stdscr, self.bw_cli)
             self.main_window.run()
         except Exception as e:
-            self.logger.error(f"UI error: {e}")
+            logger = logging.getLogger(__name__)
+            logger.error("UI error: %s", e)
             raise

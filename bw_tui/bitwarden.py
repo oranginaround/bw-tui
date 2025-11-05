@@ -67,7 +67,8 @@ class BitwardenCLI:
                 [self.bw_path, "status"],
                 capture_output=True,
                 text=True,
-                check=True
+                check=True,
+                env=os.environ.copy()  # Use full environment
             )
             status_data = json.loads(result.stdout)
             status = status_data.get("status")
@@ -91,7 +92,8 @@ class BitwardenCLI:
                 [self.bw_path, "status"],
                 capture_output=True,
                 text=True,
-                check=True
+                check=True,
+                env=os.environ.copy()  # Use full environment
             )
             status_data = json.loads(result.stdout)
             status = status_data.get("status")
@@ -118,7 +120,8 @@ class BitwardenCLI:
                 [self.bw_path, "unlock", password, "--raw"],
                 capture_output=True,
                 text=True,
-                check=True
+                check=True,
+                env=os.environ.copy()  # Use full environment
             )
             session_key = result.stdout.strip()
             self.logger.debug(f"Unlock successful, session key length: {len(session_key) if session_key else 0}")
