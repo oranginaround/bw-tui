@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bw-tui"
+version = "0.1.0"
+description = "A curses-based terminal interface for Bitwarden CLI"
+authors = [
+    {name = "Your Name", email = "your.email@example.com"}
+]
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console :: Curses",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Security",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "pyperclip>=1.8.2",
+]
+
+[project.scripts]
+bw-tui = "main:main"
+
+[project.urls]
+Homepage = "https://github.com/yourusername/bw-tui"
+Repository = "https://github.com/yourusername/bw-tui"
+Issues = "https://github.com/yourusername/bw-tui/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["bw_tui*"]
