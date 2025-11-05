@@ -8,10 +8,9 @@ the Bitwarden vault, searching items, and copying passwords.
 import curses
 import pyperclip
 import logging
+import time
 import subprocess
-import sys
-import os
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 
 from bw_tui.bitwarden import BitwardenCLI
 
@@ -134,7 +133,9 @@ class MainWindow:
         self.current_selection = 0
         self.search_query = ""
         self.mode = "browse"  # browse, search, unlock
-        self.session_key: Optional[str] = None
+        self.status_message = ""  # Temporary status message
+        self.status_color = 0     # Color pair for status message
+        self.status_message_time = 0  # Timestamp when message was set
         
         # Window dimensions
         self.height, self.width = stdscr.getmaxyx()
@@ -232,8 +233,7 @@ class MainWindow:
                         if session_key:
                             self.logger.debug("Unlock successful")
                             self.mode = "browse"
-                            # Store session key for future operations
-                            self.session_key = session_key
+                            # Session key is now managed by the CLI wrapper
                             return True
                         else:
                             # Show error and try again
@@ -357,7 +357,7 @@ class MainWindow:
     def _load_items(self):
         """Load items from the vault."""
         self.logger.debug("Loading items from vault...")
-        self.items = self.bw_cli.get_items(self.session_key)
+        self.items = self.bw_cli.get_items()
         self.logger.debug("Loaded %d items from vault", len(self.items))
         self.filtered_items = self.items.copy()
         self.current_selection = 0
@@ -434,17 +434,31 @@ class MainWindow:
     
     def _draw_status(self):
         """Draw the status window."""
+        # Clear expired status messages (after 3 seconds)
+        if self.status_message and time.time() - self.status_message_time > 3:
+            self.status_message = ""
+            self.status_color = 0
+            self.status_message_time = 0
+        
         self.status_win.clear()
         
-        # Show help text
-        if self.mode == "browse":
-            help_text = "q:quit | s:search | /:search | c:copy | ENTER:copy | ESC:clear search"
-        elif self.mode == "search":
-            help_text = "Type to search | ENTER:copy | ESC:clear search | q:quit"
+        # Show status message if present
+        if self.status_message:
+            try:
+                self.status_win.addstr(0, 0, self.status_message, curses.color_pair(self.status_color))
+            except curses.error:
+                # Handle case where message is too long
+                pass
         else:
-            help_text = ""
-        
-        self.status_win.addstr(0, 0, help_text)
+            # Show help text
+            if self.mode == "browse":
+                help_text = "q:quit | s:search | /:search | c:copy | ENTER:copy | ESC:clear search | l:lock"
+            elif self.mode == "search":
+                help_text = "Type to search | ENTER:copy | ESC:clear search | q:quit"
+            else:
+                help_text = ""
+            
+            self.status_win.addstr(0, 0, help_text)
         
         # Show item count
         if self.filtered_items:
@@ -489,6 +503,21 @@ class MainWindow:
         
         elif ch == ord('c') or ch == curses.KEY_ENTER or ch == 10:  # Copy password
             self._copy_password()
+        
+        elif ch == ord('l'):  # Lock vault
+            self.logger.debug("Locking vault via UI command")
+            if self.bw_cli.lock():
+                self.logger.debug("Vault locked successfully")
+                self.status_message = "Vault locked successfully - exiting"
+                self.status_color = 2  # Green
+                self.status_message_time = time.time()
+                # Exit after successful lock
+                raise KeyboardInterrupt
+            else:
+                self.logger.error("Failed to lock vault")
+                self.status_message = "Failed to lock vault"
+                self.status_color = 3  # Red
+                self.status_message_time = time.time()
         
         elif ch == curses.KEY_UP:
             if self.filtered_items:
